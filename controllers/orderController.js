@@ -1,95 +1,92 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
+const { sendOrderCompletionEmail, sendOrderStatusEmail } = require('../services/emailService');
 
-// Create a new order (Any authenticated user)
+// Create a new order
 exports.createOrder = async (req, res) => {
   try {
     const { products } = req.body;
-    const studentId = req.user.id; // Get from authenticated user
-    
-    // Validate and calculate total amount
+
+    if (!products || products.length === 0) {
+      return res.status(400).json({ error: 'No products in order' });
+    }
+
     let totalAmount = 0;
-    const validatedProducts = [];
-      
+    const orderProducts = [];
+
     for (const item of products) {
       const product = await Product.findById(item.productId);
       if (!product) {
-        return res.status(404).json({ error: `Product with ID ${item.productId} not found` });
+        return res.status(404).json({ error: `Product ${item.productId} not found` });
       }
       if (!product.isAvailable) {
-        return res.status(400).json({ error: `Product ${product.name} is not available` });
+        return res.status(400).json({ error: `${product.name} is not available` });
       }
 
-      const itemTotal = product.price * item.quantity;
-      totalAmount += itemTotal;
-
-      validatedProducts.push({
-        productId: item.productId,
+      orderProducts.push({
+        productId: product._id,
         quantity: item.quantity,
-        price: product.price
+        price: product.price,
       });
+
+      totalAmount += product.price * item.quantity;
     }
 
     const order = new Order({
-      studentId,
-      products: validatedProducts,
-      totalAmount
+      studentId: req.user.id,
+      products: orderProducts,
+      totalAmount,
     });
 
     await order.save();
-    
+
     const populatedOrder = await Order.findById(order._id)
       .populate('studentId', 'name email')
       .populate('products.productId', 'name category');
 
-    res.status(201).json({ 
-      message: 'Order created successfully', 
-      order: populatedOrder 
+    res.status(201).json({
+      message: 'Order created successfully',
+      order: populatedOrder,
     });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
 };
 
-// Get logged-in user's orders (Student)
+// Get logged-in user's orders
 exports.getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({ studentId: req.user.id })
       .populate('products.productId', 'name category imageUrl')
       .sort({ orderDate: -1 });
-
     res.json(orders);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get all orders (Admin only)
+// Get all orders (Admin)
 exports.getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find()
       .populate('studentId', 'name email')
       .populate('products.productId', 'name category')
       .sort({ orderDate: -1 });
-
     res.json(orders);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get order by ID (Owner or Admin)
+// Get order by ID
 exports.getOrderById = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate('studentId', 'name email')
       .populate('products.productId', 'name category imageUrl');
 
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
+    if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    // Check if user is owner or admin
     if (req.user.role !== 'admin' && order.studentId._id.toString() !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
@@ -100,7 +97,7 @@ exports.getOrderById = async (req, res) => {
   }
 };
 
-// Update order status (Admin only)
+// Update order status (Admin) — sends notification email + e-bill on completion
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status } = req.body;
@@ -114,11 +111,21 @@ exports.updateOrderStatus = async (req, res) => {
       req.params.id,
       updateData,
       { new: true, runValidators: true }
-    ).populate('studentId', 'name email')
-     .populate('products.productId', 'name category');
+    )
+      .populate('studentId', 'name email')
+      .populate('products.productId', 'name category');
 
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // Send email notifications (non-blocking)
+    if (status === 'Completed') {
+      sendOrderCompletionEmail(order).catch(err =>
+        console.error('Completion email failed:', err.message)
+      );
+    } else if (status === 'Confirmed' || status === 'Cancelled') {
+      sendOrderStatusEmail(order, status).catch(err =>
+        console.error('Status email failed:', err.message)
+      );
     }
 
     res.json({ message: 'Order status updated successfully', order });
@@ -127,7 +134,7 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
-// Update payment status (Admin only)
+// Update payment status (Admin)
 exports.updatePaymentStatus = async (req, res) => {
   try {
     const { paymentStatus } = req.body;
@@ -136,12 +143,11 @@ exports.updatePaymentStatus = async (req, res) => {
       req.params.id,
       { paymentStatus },
       { new: true, runValidators: true }
-    ).populate('studentId', 'name email')
-     .populate('products.productId', 'name category');
+    )
+      .populate('studentId', 'name email')
+      .populate('products.productId', 'name category');
 
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
+    if (!order) return res.status(404).json({ error: 'Order not found' });
 
     res.json({ message: 'Payment status updated successfully', order });
   } catch (error) {
@@ -149,29 +155,19 @@ exports.updatePaymentStatus = async (req, res) => {
   }
 };
 
-// Cancel order (Owner can cancel pending orders, Admin can cancel any)
+// Cancel order
 exports.cancelOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    // Check permissions
     const isOwner = order.studentId.toString() === req.user.id;
     const isAdmin = req.user.role === 'admin';
 
-    if (!isOwner && !isAdmin) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Students can only cancel pending orders
+    if (!isOwner && !isAdmin) return res.status(403).json({ error: 'Access denied' });
     if (isOwner && !isAdmin && order.status !== 'Pending') {
       return res.status(400).json({ error: 'You can only cancel pending orders' });
     }
-
-    // Admin cannot cancel completed orders
     if (order.status === 'Completed') {
       return res.status(400).json({ error: 'Cannot cancel a completed order' });
     }
@@ -183,13 +179,17 @@ exports.cancelOrder = async (req, res) => {
       .populate('studentId', 'name email')
       .populate('products.productId', 'name category');
 
+    sendOrderStatusEmail(populatedOrder, 'Cancelled').catch(err =>
+      console.error('Cancel email failed:', err.message)
+    );
+
     res.json({ message: 'Order cancelled successfully', order: populatedOrder });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get orders by status (Admin only)
+// Get orders by status (Admin)
 exports.getOrdersByStatus = async (req, res) => {
   try {
     const { status } = req.params;
@@ -197,7 +197,6 @@ exports.getOrdersByStatus = async (req, res) => {
       .populate('studentId', 'name email')
       .populate('products.productId', 'name category')
       .sort({ orderDate: -1 });
-
     res.json(orders);
   } catch (error) {
     res.status(500).json({ error: error.message });

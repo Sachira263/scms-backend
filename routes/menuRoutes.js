@@ -2,13 +2,15 @@ const express = require('express');
 const router = express.Router();
 const upload = require('../middleware/uploadMiddleware');
 const { 
+
   getAllProducts, 
   createProduct, 
-  getProductById, 
+  getProductById,
   updateProduct, 
   deleteProduct,
   getProductsByCategory,
-  toggleAvailability
+  toggleAvailability,
+
 } = require('../controllers/menuController');
 const { protect, isAdmin } = require('../middleware/authMiddleware');
 

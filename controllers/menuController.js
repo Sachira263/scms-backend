@@ -27,7 +27,7 @@ exports.createProduct = async (req, res) => {
       return res.status(400).json({ error: 'Image is required' });
     }
 
-    const imageUrl = req.file.path.replace(/\\/g, '/');
+    const imageUrl = `/uploads/${req.file.filename}`;
 
     const product = new Product({
       name,
@@ -64,7 +64,7 @@ exports.updateProduct = async (req, res) => {
     let updateData = { name, price, description, category, isAvailable };
 
     if (req.file) {
-      updateData.imageUrl = req.file.path.replace(/\\/g, '/');
+      updateData.imageUrl = `/uploads/${req.file.filename}`;
     }
 
     const product = await Product.findByIdAndUpdate(

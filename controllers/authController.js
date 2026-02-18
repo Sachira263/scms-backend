@@ -12,8 +12,7 @@ exports.register = async (req, res) => {
     if (existingUser) {
       return res.status(400).json({ error: "Email already registered" });
     }
-
-    // Only allow 'student' role for public registration
+     // Only allow 'student' role for public registration
     // Admin accounts should be created manually or by existing admin
     const userRole = role === 'admin' ? 'student' : (role || 'student');
     
